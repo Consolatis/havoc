@@ -20,7 +20,8 @@ LIBS = -lm -lutil $(PKG_LIBS)
 XML = \
 	xdg-shell.xml \
 	xdg-decoration-unstable-v1.xml \
-	primary-selection-unstable-v1.xml
+	primary-selection-unstable-v1.xml \
+	wlr-layer-shell-unstable-v1.xml
 
 GEN = \
 	xdg-shell.h \
@@ -28,7 +29,9 @@ GEN = \
 	xdg-decoration-unstable-v1.h \
 	xdg-decoration-unstable-v1.c \
 	primary-selection-unstable-v1.h \
-	primary-selection-unstable-v1.c
+	primary-selection-unstable-v1.c \
+	wlr-layer-shell-unstable-v1.h \
+	wlr-layer-shell-unstable-v1.c
 
 OBJ = \
 	main.o \
@@ -36,6 +39,7 @@ OBJ = \
 	xdg-shell.o \
 	xdg-decoration-unstable-v1.o \
 	primary-selection-unstable-v1.o \
+	wlr-layer-shell-unstable-v1.o \
 	tsm/wcwidth.o \
 	tsm/shl-htable.o \
 	tsm/tsm-render.o \

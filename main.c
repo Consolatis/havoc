@@ -24,6 +24,7 @@
 #include "xdg-shell.h"
 #include "primary-selection-unstable-v1.h"
 #include "xdg-decoration-unstable-v1.h"
+#include "wlr-layer-shell-unstable-v1.h"
 
 #define ARRAY_LENGTH(a) (sizeof (a) / sizeof (a)[0])
 
@@ -60,10 +61,12 @@ static struct {
 	bool shm_argb;
 	struct xdg_wm_base *wm_base;
 	struct wl_seat *seat;
+	struct zwlr_layer_shell_v1 *layer_shell;
 
 	struct wl_surface *surf;
 	struct xdg_surface *xdgsurf;
 	struct xdg_toplevel *toplvl;
+	struct zwlr_layer_surface_v1 *layer_surface;
 
 	struct buffer {
 		struct wl_buffer *b;
@@ -183,6 +186,7 @@ static struct {
 		int scrollback;
 		bool scroll_to_bottom_on_input;
 		bool margin;
+		bool layershell;
 		unsigned char opacity;
 		enum deco decorations;
 		int font_size;
@@ -196,6 +200,7 @@ static struct {
 	.cfg.scrollback = 0,
 	.cfg.scroll_to_bottom_on_input = false,
 	.cfg.margin = false,
+	.cfg.layershell = false,
 	.cfg.opacity = 0xff,
 	.cfg.decorations = DECO_AUTO,
 	.cfg.font_size = 18,
@@ -1508,9 +1513,9 @@ static const struct xdg_toplevel_listener toplvl_listener = {
 	.close = toplvl_close,
 };
 
-static void configure(void *d, struct xdg_surface *surf, uint32_t serial)
+static void
+_configure(void)
 {
-	xdg_surface_ack_configure(surf, serial);
 	int col = term.confwidth / term.cwidth;
 	int row = term.confheight / term.cheight;
 	struct winsize ws = {
@@ -1549,6 +1554,12 @@ static void configure(void *d, struct xdg_surface *surf, uint32_t serial)
 
 	term.need_redraw = true;
 	term.resize = 2;
+}
+
+static void configure(void *d, struct xdg_surface *surf, uint32_t serial)
+{
+	xdg_surface_ack_configure(surf, serial);
+	_configure();
 }
 
 static const struct xdg_surface_listener surf_listener = {
@@ -1598,6 +1609,9 @@ static void registry_get(void *data, struct wl_registry *r, uint32_t id,
 	} else if (strcmp(i, "zxdg_decoration_manager_v1") == 0) {
 		term.deco.manager = wl_registry_bind(r, id,
 			&zxdg_decoration_manager_v1_interface, 1);
+	} else if (strcmp(i, zwlr_layer_shell_v1_interface.name) == 0) {
+		term.layer_shell = wl_registry_bind(r, id,
+			&zwlr_layer_shell_v1_interface, 4);
 	}
 }
 
@@ -1746,6 +1760,8 @@ static void window_config(char *key, char *val)
 	else if (strcmp(key, "decorations") == 0)
 		term.cfg.decorations = strcmp(val, "yes") == 0 ? DECO_SERVER
 			: (strcmp(val, "no") == 0 ? DECO_NONE : DECO_AUTO);
+	else if (strcmp(key, "layershell") == 0)
+		term.cfg.layershell = strcmp(val, "yes") == 0;
 }
 
 static void terminal_config(char *key, char *val)
@@ -1959,6 +1975,29 @@ static void read_config(void)
 	fclose(f);
 }
 
+static void
+layer_surface_configure(void *data, struct zwlr_layer_surface_v1 *surface,
+		uint32_t serial, uint32_t width, uint32_t height)
+{
+	term.configured = false;
+	term.confwidth = width ? width : term.cfg.col * term.cwidth;
+	term.confheight = height ? height : term.cfg.row * term.cheight;
+	zwlr_layer_surface_v1_ack_configure(surface, serial);
+	_configure();
+}
+
+static void
+layer_surface_closed(void *data, struct zwlr_layer_surface_v1 *surface)
+{
+	fprintf(stderr, "Layersurface closed\n");
+	/* FIXME: handle this */
+}
+
+static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
+	.configure = layer_surface_configure,
+	.closed = layer_surface_closed,
+};
+
 static void usage(void)
 {
 	printf("usage: havoc [option...] [program [args...]]\n\n"
@@ -2055,19 +2094,40 @@ retry:
 	if (term.surf == NULL)
 		fail(esurf, "could not create surface");
 
-	term.xdgsurf = xdg_wm_base_get_xdg_surface(term.wm_base, term.surf);
-	if (term.xdgsurf == NULL)
-		fail(exdgsurf, "could not create xdg_surface");
-	xdg_surface_add_listener(term.xdgsurf, &surf_listener, NULL);
+	if (!term.cfg.layershell) {
+		term.xdgsurf = xdg_wm_base_get_xdg_surface(term.wm_base, term.surf);
+		if (term.xdgsurf == NULL)
+			fail(exdgsurf, "could not create xdg_surface");
+		xdg_surface_add_listener(term.xdgsurf, &surf_listener, NULL);
 
-	term.toplvl = xdg_surface_get_toplevel(term.xdgsurf);
-	if (term.toplvl == NULL)
-		fail(etoplvl, "could not create xdg_toplevel");
-	xdg_toplevel_add_listener(term.toplvl, &toplvl_listener, NULL);
-	xdg_toplevel_set_title(term.toplvl, "havoc");
-	xdg_toplevel_set_app_id(term.toplvl, term.opt.app_id);
+		term.toplvl = xdg_surface_get_toplevel(term.xdgsurf);
+		if (term.toplvl == NULL)
+			fail(etoplvl, "could not create xdg_toplevel");
+		xdg_toplevel_add_listener(term.toplvl, &toplvl_listener, NULL);
+		xdg_toplevel_set_title(term.toplvl, "havoc");
+		xdg_toplevel_set_app_id(term.toplvl, term.opt.app_id);
 
-	setup_deco();
+		setup_deco();
+	} else {
+		term.layer_surface = zwlr_layer_shell_v1_get_layer_surface(
+				term.layer_shell, term.surf,
+				NULL /* output */,
+				ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
+				"foo");
+		zwlr_layer_surface_v1_add_listener(term.layer_surface,
+				&layer_surface_listener, NULL);
+		/* TODO: read from config */
+		zwlr_layer_surface_v1_set_anchor(term.layer_surface,
+				ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM
+				| ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT
+				| ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
+		zwlr_layer_surface_v1_set_keyboard_interactivity(term.layer_surface,
+				ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE);
+		/* TODO: use either rows or cols based on anchors */
+		int height = term.cfg.row * term.cheight;
+		zwlr_layer_surface_v1_set_size(term.layer_surface, 0, height);
+		zwlr_layer_surface_v1_set_exclusive_zone(term.layer_surface, height);
+	}
 
 	wl_surface_commit(term.surf);
 	term.can_redraw = true;
@@ -2150,11 +2210,16 @@ retry:
 	if (term.deco.manager)
 		zxdg_decoration_manager_v1_destroy(term.deco.manager);
 
-	xdg_toplevel_destroy(term.toplvl);
+	if (term.toplvl)
+		xdg_toplevel_destroy(term.toplvl);
 etoplvl:
-	xdg_surface_destroy(term.xdgsurf);
+	if (term.xdgsurf)
+		xdg_surface_destroy(term.xdgsurf);
+	if (term.layer_surface)
+		zwlr_layer_surface_v1_destroy(term.layer_surface);
 exdgsurf:
-	wl_surface_destroy(term.surf);
+	if (term.surf)
+		wl_surface_destroy(term.surf);
 esurf:
 	tsm_vte_unref(term.vte);
 evte:
